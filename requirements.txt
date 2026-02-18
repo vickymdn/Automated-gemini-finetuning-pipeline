@@ -1,0 +1,9 @@
+# Core GCP libraries
+google-cloud-storage>=2.16.0
+google-cloud-aiplatform>=1.50.0
+
+# Vertex AI SDK (includes SFT tuning support)
+vertexai>=1.50.0
+
+# Utilities
+tqdm>=4.66.0

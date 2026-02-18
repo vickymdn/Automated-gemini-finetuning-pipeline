@@ -1,0 +1,136 @@
+# .gitlab-ci.yml — CI/CD pipeline for the fine-tuning Cloud Run Job.
+#
+# Stages:
+#   build  → Build Docker image and push to Artifact Registry.
+#   deploy → Deploy image as a Cloud Run Job.
+#
+# Branches:
+#   dev  → Deploys to the DEV environment.
+#   main → Deploys to the PROD environment (extend as needed).
+#
+# Prerequisites:
+#   • A GitLab runner with Docker + gcloud SDK available.
+#   • The runner's service account must have:
+#       roles/artifactregistry.writer
+#       roles/run.developer
+#       roles/iam.serviceAccountUser
+
+stages:
+  - build
+  - deploy
+
+# ── Shared variables ──────────────────────────────────────────────────────────
+variables:
+  SERVICE_NAME: "fine-tuning-pipeline"
+
+  # ── DEV environment ──────────────────────────────────────────────────────
+  DEV_BRANCH:          "dev"
+  DEV_PROJECT_ID:      "your-dev-project-id"
+  DEV_REGION:          "us-central1"
+  DEV_REGISTRY:        "us-docker.pkg.dev/your-dev-project-id/your-repo"
+  DEV_SERVICE_ACCOUNT: "your-dev-sa@your-dev-project-id.iam.gserviceaccount.com"
+  DEV_JOB_NAME:        "dev-cr-fine-tuning-pipeline"
+  DEV_RUNNER_TAG:      "dev-runner"
+
+  # ── PROD environment (uncomment and fill to enable) ──────────────────────
+  # PROD_BRANCH:          "main"
+  # PROD_PROJECT_ID:      "your-prod-project-id"
+  # PROD_REGION:          "us-central1"
+  # PROD_REGISTRY:        "us-docker.pkg.dev/your-prod-project-id/your-repo"
+  # PROD_SERVICE_ACCOUNT: "your-prod-sa@your-prod-project-id.iam.gserviceaccount.com"
+  # PROD_JOB_NAME:        "prod-cr-fine-tuning-pipeline"
+  # PROD_RUNNER_TAG:      "prod-runner"
+
+# ── Authenticate before each job ─────────────────────────────────────────────
+before_script:
+  - |
+    if [[ "$CI_COMMIT_BRANCH" == "$DEV_BRANCH" ]]; then
+      gcloud config set project $DEV_PROJECT_ID
+      gcloud auth configure-docker us-docker.pkg.dev --quiet
+    fi
+
+# ──────────────────────────────────────────────────────────────────────────────
+# DEV — Build
+# ──────────────────────────────────────────────────────────────────────────────
+dev-build:
+  stage: build
+  image: google/cloud-sdk:latest
+  tags:
+    - $DEV_RUNNER_TAG
+  rules:
+    - if: $CI_COMMIT_BRANCH == $DEV_BRANCH
+  script:
+    - IMAGE="$DEV_REGISTRY/$SERVICE_NAME:$CI_COMMIT_SHORT_SHA"
+    - LATEST="$DEV_REGISTRY/$SERVICE_NAME:latest"
+    - docker build -t $IMAGE -t $LATEST .
+    - docker push $IMAGE
+    - docker push $LATEST
+    - echo "IMAGE=$IMAGE" >> build.env
+  artifacts:
+    reports:
+      dotenv: build.env
+
+# ──────────────────────────────────────────────────────────────────────────────
+# DEV — Deploy Cloud Run Job
+# ──────────────────────────────────────────────────────────────────────────────
+dev-deploy:
+  stage: deploy
+  needs: ["dev-build"]
+  image: google/cloud-sdk:latest
+  tags:
+    - $DEV_RUNNER_TAG
+  rules:
+    - if: $CI_COMMIT_BRANCH == $DEV_BRANCH
+  script:
+    - IMAGE="$DEV_REGISTRY/$SERVICE_NAME:$CI_COMMIT_SHORT_SHA"
+    - |
+      gcloud run jobs deploy $DEV_JOB_NAME \
+        --project=$DEV_PROJECT_ID \
+        --region=$DEV_REGION \
+        --image=$IMAGE \
+        --memory=2Gi \
+        --cpu=1 \
+        --task-timeout=120m \
+        --max-retries=0 \
+        --service-account=$DEV_SERVICE_ACCOUNT \
+        --env-vars-file=.env.yaml \
+        --labels="env=dev,app=fine-tuning-pipeline,commit=$CI_COMMIT_SHORT_SHA"
+
+# ──────────────────────────────────────────────────────────────────────────────
+# PROD — Build & Deploy (uncomment when ready)
+# ──────────────────────────────────────────────────────────────────────────────
+# prod-build:
+#   stage: build
+#   image: google/cloud-sdk:latest
+#   tags:
+#     - $PROD_RUNNER_TAG
+#   rules:
+#     - if: $CI_COMMIT_BRANCH == $PROD_BRANCH
+#   script:
+#     - IMAGE="$PROD_REGISTRY/$SERVICE_NAME:$CI_COMMIT_SHORT_SHA"
+#     - docker build -t $IMAGE -t "$PROD_REGISTRY/$SERVICE_NAME:latest" .
+#     - docker push $IMAGE
+#     - docker push "$PROD_REGISTRY/$SERVICE_NAME:latest"
+#
+# prod-deploy:
+#   stage: deploy
+#   needs: ["prod-build"]
+#   image: google/cloud-sdk:latest
+#   tags:
+#     - $PROD_RUNNER_TAG
+#   rules:
+#     - if: $CI_COMMIT_BRANCH == $PROD_BRANCH
+#   script:
+#     - IMAGE="$PROD_REGISTRY/$SERVICE_NAME:$CI_COMMIT_SHORT_SHA"
+#     - |
+#       gcloud run jobs deploy $PROD_JOB_NAME \
+#         --project=$PROD_PROJECT_ID \
+#         --region=$PROD_REGION \
+#         --image=$IMAGE \
+#         --memory=2Gi \
+#         --cpu=1 \
+#         --task-timeout=120m \
+#         --max-retries=0 \
+#         --service-account=$PROD_SERVICE_ACCOUNT \
+#         --env-vars-file=.env.yaml \
+#         --labels="env=prod,app=fine-tuning-pipeline,commit=$CI_COMMIT_SHORT_SHA"
